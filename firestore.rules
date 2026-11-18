@@ -1,0 +1,174 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdminEmail() {
+      return isVerifiedUser() && request.auth.token.email == 'iamaqsoodkhan@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdminEmail() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'photoURL',
+          'phone', 'savedArea', 'savedAddress', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL',
+          'phone', 'savedArea', 'savedAddress', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && isValidId(data.uid) && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
+        && data.photoURL is string && data.photoURL.size() <= 500
+        && data.phone is string && data.phone.size() <= 24
+        && data.savedArea is string && data.savedArea.size() <= 100
+        && data.savedAddress is string && data.savedAddress.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+          'orderNumber', 'userId', 'customerName', 'customerPhone', 'customerEmail',
+          'orderType', 'areaName', 'address', 'distanceKm', 'subtotal',
+          'deliveryFee', 'total', 'paymentMethod', 'status', 'items',
+          'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'orderNumber', 'userId', 'customerName', 'customerPhone', 'customerEmail',
+          'orderType', 'areaName', 'address', 'distanceKm', 'subtotal',
+          'deliveryFee', 'total', 'paymentMethod', 'status', 'items',
+          'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.orderNumber is string && data.orderNumber.size() >= 4 && data.orderNumber.size() <= 32 && data.orderNumber.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId is string && isValidId(data.userId)
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 100
+        && data.customerPhone is string && data.customerPhone.size() >= 7 && data.customerPhone.size() <= 24
+        && data.customerEmail is string && data.customerEmail.size() <= 150
+        && data.orderType is string && data.orderType in ['delivery', 'takeaway', 'dining']
+        && data.areaName is string && data.areaName.size() <= 100
+        && data.address is string && data.address.size() <= 300
+        && data.distanceKm is number && data.distanceKm >= 0 && data.distanceKm <= 100
+        && data.subtotal is number && data.subtotal >= 0 && data.subtotal <= 500000
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 10000
+        && data.total is number && data.total >= 0 && data.total <= 510000
+        && data.paymentMethod is string && data.paymentMethod in ['cod', 'pay_at_counter']
+        && data.status is string && data.status in ['confirmed', 'cooking', 'out_for_delivery', 'delivered']
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 40 && data.items[0] is map
+        && data.notes is string && data.notes.size() <= 400
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStageAdvance(prevStatus, nextStatus) {
+      return (prevStatus == 'confirmed' && nextStatus == 'cooking')
+        || (prevStatus == 'cooking' && nextStatus == 'out_for_delivery')
+        || (prevStatus == 'out_for_delivery' && nextStatus == 'delivered');
+    }
+
+    // Users Collection (PII isolated strictly to owner or admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdminEmail();
+
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId)
+        && isVerifiedUser()
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName', 'photoURL', 'phone', 'savedArea', 'savedAddress', 'updatedAt'
+          ]))
+        );
+
+      allow delete: if false;
+    }
+
+    // Orders Collection
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isVerifiedUser() && (
+        existing().userId == request.auth.uid || isAdmin()
+      );
+
+      // No get()/exists() inside allow list (Pillar 8 Cost-Optimization Clause)
+      allow list: if isVerifiedUser() && (
+        existing().userId == request.auth.uid || isBootstrappedAdminEmail()
+      );
+
+      allow create: if isValidId(orderId)
+        && isVerifiedUser()
+        && isValidOrder(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'confirmed'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(orderId)
+        && isVerifiedUser()
+        && isValidOrder(incoming())
+        && incoming().userId == existing().userId
+        && incoming().orderNumber == existing().orderNumber
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().userId == request.auth.uid
+            && existing().status != 'delivered'
+            && isValidStageAdvance(existing().status, incoming().status)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // Admins Collection (Locked down to prevent privilege escalation)
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, write: if false;
+    }
+  }
+}

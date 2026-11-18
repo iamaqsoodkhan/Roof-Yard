@@ -1,0 +1,6 @@
+{
+  "name": "Roof Yard — De Cafe & Grill",
+  "description": "Rooftop retreat for foodies in North Nazimabad, Karachi. Order gourmet burgers, charcoal BBQ platters, karahi, pasta, kunafa, and shakes for home delivery, takeaway, or rooftop dining.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
